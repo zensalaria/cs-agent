@@ -1,7 +1,5 @@
-hubspot-api-client
 pandas
 python-dotenv
-requests
 anthropic
 tqdm
 dash

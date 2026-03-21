@@ -8,6 +8,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from dash import Dash, dcc, html, dash_table
 import dash_bootstrap_components as dbc
+from utils import parse_ttc_to_seconds
 
 ANALYSIS_CSV = "output/ticket_analysis.csv"
 
@@ -160,23 +161,33 @@ def _sparkline(values, color=BLUE):
 
 # ── Gauge ──────────────────────────────────────────────────────────────────────
 
-def _gauge(value, title, lo_good=False):
+def _gauge(value, title, lo_good=False, max_val=100, thresholds=(33, 66),
+           suffix="", number_fmt=None):
     """
-    lo_good=True  → low value = good (speed percentile: lower = faster)
+    lo_good=True  → low value = good (avg time-to-close: lower = faster)
     lo_good=False → high value = good (sentiment score)
+    thresholds    → (t1, t2) in the same units as value / max_val
+    suffix        → appended to the displayed number (e.g. "h")
     """
+    t1, t2 = thresholds
     if lo_good:
-        color = GREEN if value < 33 else ORANGE if value < 66 else RED
+        color = GREEN if value < t1 else ORANGE if value < t2 else RED
     else:
-        color = GREEN if value >= 65 else ORANGE if value >= 35 else RED
+        color = GREEN if value >= t2 else ORANGE if value >= t1 else RED
+
+    num_cfg = {"font": {"color": TXT, "size": 36, "family": "Inter"}}
+    if suffix:
+        num_cfg["suffix"] = suffix
+    if number_fmt:
+        num_cfg["valueformat"] = number_fmt
 
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=round(value, 1),
-        number={"font": {"color": TXT, "size": 36, "family": "Inter"}},
+        number=num_cfg,
         gauge={
             "axis": {
-                "range": [0, 100],
+                "range": [0, max_val],
                 "tickcolor": MUTED,
                 "tickfont": {"color": MUTED, "size": 10},
                 "nticks": 6,
@@ -185,9 +196,9 @@ def _gauge(value, title, lo_good=False):
             "bgcolor": "rgba(0,0,0,0)",
             "borderwidth": 0,
             "steps": [
-                {"range": [0,  33], "color": f"rgba({_rgb(RED)},0.08)"},
-                {"range": [33, 66], "color": f"rgba({_rgb(ORANGE)},0.08)"},
-                {"range": [66,100], "color": f"rgba({_rgb(GREEN)},0.08)"},
+                {"range": [0,       t1],       "color": f"rgba({_rgb(GREEN if lo_good else RED)},0.08)"},
+                {"range": [t1,      t2],       "color": f"rgba({_rgb(ORANGE)},0.08)"},
+                {"range": [t2, max_val],       "color": f"rgba({_rgb(RED if lo_good else GREEN)},0.08)"},
             ],
         },
         title={"text": title, "font": {"color": MUTED, "size": 12, "family": "Inter"}},
@@ -399,7 +410,10 @@ def build_layout(df):
     low_ceq  = int((df["client_experience_quality_score"] == "Low").sum())
 
     avg_sent  = float(df["sentiment_num"].mean()) if df["sentiment_num"].notna().any() else 1.0
-    avg_speed = float(df["speed_percentile_score"].mean()) if df["speed_percentile_score"].notna().any() else 50.0
+
+    # Average time-to-close in hours (excluding missing/zero values)
+    ttc_seconds = df["TTC_generated"].apply(parse_ttc_to_seconds).dropna()
+    avg_ttc_hours = float(ttc_seconds.mean() / 3600) if not ttc_seconds.empty else 0.0
 
     # Sentiment gauge: 0-100 where 100 = all positive
     sent_gauge_val = (avg_sent / 2.0) * 100.0
@@ -422,8 +436,15 @@ def build_layout(df):
     fig_ceq   = _stacked_bar(df_d, "client_experience_quality_score", CEQ_ORDER,     CEQ_COLORS,     "Weekly — Client Experience Quality")
     fig_sent  = _stacked_bar(df_d, "sentiment_score",                 SENT_ORDER,    SENT_COLORS,    "Weekly — Customer Sentiment")
 
-    fig_sent_gauge  = _gauge(sent_gauge_val, "Avg Sentiment Score",   lo_good=False)
-    fig_speed_gauge = _gauge(avg_speed,      "Avg Speed Percentile",  lo_good=True)
+    fig_sent_gauge  = _gauge(sent_gauge_val,  "Avg Sentiment Score",    lo_good=False)
+    fig_speed_gauge = _gauge(
+        avg_ttc_hours,
+        "Avg Time to Close (hours)",
+        lo_good=True,
+        max_val=8,
+        thresholds=(2, 4),
+        suffix="h",
+    )
 
     sent_rows  = _sentiment_rankings(df)
     speed_rows = _speed_rankings(df)
@@ -464,7 +485,7 @@ def build_layout(df):
                 dcc.Graph(figure=fig_sent_gauge, config={"displayModeBar": False}),
             ]), style={"flex": "1", "minWidth": "220px"}),
             html.Div(_card([
-                _section_head("Speed Score", "Average time-to-close percentile — lower percentile = resolved faster"),
+                _section_head("Speed Score", "Average time to close across all tickets — green < 2h, orange 2–4h, red > 4h"),
                 dcc.Graph(figure=fig_speed_gauge, config={"displayModeBar": False}),
             ]), style={"flex": "1", "minWidth": "220px"}),
         ], style={"display": "flex", "gap": GAP, "padding": f"0 24px {GAP} 24px", "flexWrap": "wrap"}),

@@ -1,0 +1,164 @@
+# CS Agent — HubSpot Support Analytics
+
+An AI-powered pipeline that reads your HubSpot ticket export, runs each conversation through Claude to generate quality and sentiment scores, and serves a local dark-mode analytics dashboard.
+
+![Dashboard overview](docs/overview.png)
+
+---
+
+## What it does
+
+The pipeline has two steps:
+
+1. **`classify_tickets.py`** — reads your HubSpot ticket CSV, sends each ticket transcript to Claude (Anthropic), and writes an enriched output CSV with the following scores per ticket:
+   - **Feature request flag** — did this ticket contain a feature request?
+   - **Product quality score** — High / Medium / Low / Null
+   - **Client experience quality score** — High / Medium / Low
+   - **Sentiment score** — positive / neutral / negative
+   - **Speed percentile** — where this ticket's time-to-close sits relative to all other tickets (lower = faster)
+
+2. **`dashboard.py`** — reads the enriched CSV and serves an interactive Dash dashboard at `http://localhost:8050`.
+
+---
+
+## Dashboard
+
+### KPI cards + gauges
+
+Four metric cards show headline numbers with weekly sparklines. Two gauges display the fleet-wide average sentiment and speed scores.
+
+![KPI cards and gauges](docs/overview.png)
+
+### Customer rankings
+
+Ranks customers by average sentiment score and average time-to-close, highlighting the best and worst performers.
+
+![Customer sentiment rankings](docs/rankings.png)
+
+### Weekly trend charts
+
+Stacked bar charts break down product quality, client experience quality, and customer sentiment by week.
+
+![Weekly trend charts](docs/charts.png)
+
+### Feature requests
+
+A searchable table of every ticket flagged as containing a feature request, with Claude's description of what was asked for.
+
+![Feature requests table](docs/feature-requests.png)
+
+---
+
+## Requirements
+
+- Python 3.10+
+- An [Anthropic API key](https://console.anthropic.com/)
+- A HubSpot ticket export CSV (see column format below)
+
+---
+
+## Setup
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/zensalaria/cs-agent.git
+cd cs-agent
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Add your API key
+cp .env.example .env
+# Open .env and fill in your ANTHROPIC_API_KEY
+```
+
+---
+
+## Running the pipeline
+
+### Step 1 — classify tickets
+
+```bash
+python classify_tickets.py --tickets path/to/your_tickets.csv --output output/ticket_analysis.csv
+```
+
+The script resumes automatically if interrupted — already-classified rows are skipped on rerun. To start fresh:
+
+```bash
+python classify_tickets.py --tickets path/to/your_tickets.csv --no-resume
+```
+
+Optional: pass a products CSV to enable product quality scoring (see config below).
+
+```bash
+python classify_tickets.py --tickets path/to/tickets.csv --products path/to/products.csv
+```
+
+### Step 2 — launch the dashboard
+
+```bash
+python dashboard.py
+```
+
+Open `http://localhost:8050` in your browser.
+
+---
+
+## Input CSV column format
+
+Export your tickets from HubSpot and make sure the CSV contains these columns (names must match exactly):
+
+| Column | Description |
+|--------|-------------|
+| `Ticket ID` | Unique ticket identifier |
+| `Ticket name` | Subject / title of the ticket |
+| `query_transcript` | Full conversation transcript |
+| `TTC_generated` | Time to close in `H:MM:SS` format |
+| `Associated Company` | Company name (used for customer rankings) |
+| `Associated Contact` | Contact name (fallback for rankings) |
+| `generated create date` | Ticket creation date (used for weekly charts) |
+
+Column names can be customised in `config.py` if your export uses different names.
+
+### Optional: products CSV
+
+If you want product quality scores, provide a CSV with at least two columns — a product name column and a category column. Point to it via `--products` and configure the column names in `config.py`:
+
+```python
+product_name_col: str = "product_name"
+product_category_col: str = "category"
+```
+
+---
+
+## Configuration
+
+All settings live in `config.py` and can be overridden via CLI flags:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `model` | `claude-sonnet-4-6` | Anthropic model to use |
+| `max_tokens` | `1024` | Max tokens per Claude response |
+| `max_retries` | `3` | Retries on API errors |
+| `resume` | `True` | Skip already-classified rows |
+| `limit` | `None` | Process only the first N rows (useful for testing) |
+
+Example — test on the first 50 rows with a specific model:
+
+```bash
+python classify_tickets.py --tickets tickets.csv --limit 50 --model claude-opus-4-5
+```
+
+---
+
+## Environment variables
+
+| Variable | Where to get it |
+|----------|----------------|
+| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com/) |
+
+---
+
+## License
+
+MIT
