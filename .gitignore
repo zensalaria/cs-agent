@@ -1,0 +1,31 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Generated outputs & logs (may contain customer or operational data)
+output/
+*.log
+*_log.csv
+enrich_log.csv
+upload_log.csv
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Optional: large local datasets — remove this line if you ship a public sample CSV
+# customer_support_tickets_1000.csv

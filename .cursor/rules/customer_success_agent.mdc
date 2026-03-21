@@ -1,0 +1,12 @@
+---
+description: Project mission context for the HubSpot customer success agent — covers tickets, calls, and deal stats analysis.
+alwaysApply: true
+---
+
+# Project Mission
+
+This project is a HubSpot agent that automatically pulls data from HubSpot and analyses:
+
+- **Tickets** — support ticket activity, status, and trends
+- **Calls** — call logs, outcomes, and engagement metrics
+- **Deal stats** — pipeline health, deal progress, and revenue metrics
