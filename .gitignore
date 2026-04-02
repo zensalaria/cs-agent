@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+credentials.json
+token.json
 
 # Python
 __pycache__/
@@ -29,3 +31,4 @@ upload_log.csv
 
 # Optional: large local datasets — remove this line if you ship a public sample CSV
 # customer_support_tickets_1000.csv
+credentials_old.json

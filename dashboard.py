@@ -4,13 +4,17 @@ Run:  python3 dashboard.py
 Open: http://localhost:8050
 """
 
+import json
+from pathlib import Path
+
 import pandas as pd
 import plotly.graph_objects as go
-from dash import Dash, dcc, html, dash_table
+from dash import Dash, dcc, html, dash_table, Input, Output, State
 import dash_bootstrap_components as dbc
 from utils import parse_ttc_to_seconds
 
 ANALYSIS_CSV = "output/ticket_analysis.csv"
+MEETING_NOTES_JSON = Path("output/meeting_notes.json")
 
 # ── Theme ──────────────────────────────────────────────────────────────────────
 DARK_BG     = "#0c0f1d"
@@ -380,6 +384,67 @@ def _render_speed_table(rows):
 
 # ── Metric card ────────────────────────────────────────────────────────────────
 
+def _load_meeting_notes() -> list[dict]:
+    if MEETING_NOTES_JSON.exists():
+        try:
+            return json.loads(MEETING_NOTES_JSON.read_text())
+        except (json.JSONDecodeError, OSError):
+            return []
+    return []
+
+
+def _link(text, href, color=BLUE):
+    if not href:
+        return html.Span(text, style={"color": MUTED, "fontSize": "12px"})
+    return html.A(text, href=href, target="_blank", style={
+        "color": color, "fontSize": "12px", "fontWeight": "600",
+        "textDecoration": "none",
+    })
+
+
+def _hubspot_call_url(n: dict) -> str | None:
+    portal_id = n.get("hubspot_portal_id")
+    if portal_id:
+        return f"https://app.hubspot.com/contacts/{portal_id}/objects/0-48/views/all/list"
+    return None
+
+
+def _render_meeting_notes_table(notes: list[dict]):
+    if not notes:
+        return html.P(
+            "No meeting notes processed yet. Run: python meeting_notes.py",
+            style={"color": MUTED, "fontSize": "13px", "margin": "0"},
+        )
+    thead = html.Thead(html.Tr([
+        _th(h) for h in ["Date", "Participant", "Company", "Summary", "Follow-up", "HubSpot", "Email Draft"]
+    ]))
+    tbody = html.Tbody([
+        html.Tr([
+            _td(n.get("date", "—"), i),
+            _td(n.get("participant", "—"), i),
+            _td(n.get("company", "—"), i),
+            _td((n.get("summary") or "—")[:120], i),
+            _td(
+                _badge("Done", GREEN) if n.get("follow_up_done") else _badge("Pending", ORANGE),
+                i,
+                is_element=True,
+            ),
+            _td(
+                _link("View Call", _hubspot_call_url(n)),
+                i,
+                is_element=True,
+            ),
+            _td(
+                _link("View Draft", "https://mail.google.com/mail/u/0/#drafts") if n.get("gmail_draft_id") else html.Span("—", style={"color": MUTED}),
+                i,
+                is_element=True,
+            ),
+        ])
+        for i, n in enumerate(reversed(notes))
+    ])
+    return html.Table([thead, tbody], style={"width": "100%", "borderCollapse": "collapse"})
+
+
 def _metric_card(label, value, value_color, sub, spark_values, spark_color):
     return _card([
         html.P(label.upper(), style={
@@ -449,100 +514,160 @@ def build_layout(df):
     sent_rows  = _sentiment_rankings(df)
     speed_rows = _speed_rankings(df)
 
+    meeting_notes = _load_meeting_notes()
+
     fr_df = df[df["feature_request_flag"]][["Ticket name", "date", "feature_request_description"]].copy()
     fr_df["date"] = fr_df["date"].dt.strftime("%d %b %Y")
     fr_df.columns = ["Ticket", "Date", "Feature Request"]
     fr_df = fr_df.sort_values("Date").reset_index(drop=True)
 
-    return html.Div([
+    # ── Tab styling ─────────────────────────────────────────────────────────────
+    tab_style = {
+        "backgroundColor": DARK_BG,
+        "color": MUTED,
+        "border": "none",
+        "borderBottom": f"2px solid {CARD_BORDER}",
+        "padding": "12px 24px",
+        "fontFamily": "Inter, sans-serif",
+        "fontWeight": "600",
+        "fontSize": "13px",
+    }
+    tab_selected_style = {
+        **tab_style,
+        "color": TXT,
+        "borderBottom": f"2px solid {BLUE}",
+    }
 
+    # ── Support Analytics tab ────────────────────────────────────────────────
+    tickets_tab = dcc.Tab(
+        label=f"Support Analytics ({total} tickets)",
+        style=tab_style,
+        selected_style=tab_selected_style,
+        children=html.Div([
+            html.Div([
+                html.Div(_metric_card("Product Quality Issues", low_pq,  RED,   f"{low_pq} low-scored tickets",  spark_pq,    RED),   style={"flex": "1", "minWidth": "180px"}),
+                html.Div(_metric_card("Client Exp. Issues",    low_ceq, RED,   f"{low_ceq} low-scored tickets", spark_ceq,   RED),   style={"flex": "1", "minWidth": "180px"}),
+                html.Div(_metric_card("Feature Requests",      fr_count, BLUE,  f"{fr_count} flagged",           spark_fr,    BLUE),  style={"flex": "1", "minWidth": "180px"}),
+                html.Div(_metric_card("Total Tickets",         total,   TXT,   "all time",                      spark_total, BLUE),  style={"flex": "1", "minWidth": "180px"}),
+            ], style={"display": "flex", "gap": GAP, "padding": f"{GAP} 24px", "flexWrap": "wrap"}),
+
+            html.Div([
+                html.Div(_card([
+                    _section_head("Sentiment Score", "Average across all tickets — 0 = all negative, 100 = all positive"),
+                    dcc.Graph(figure=fig_sent_gauge, config={"displayModeBar": False}),
+                ]), style={"flex": "1", "minWidth": "220px"}),
+                html.Div(_card([
+                    _section_head("Speed Score", "Average time to close across all tickets — green < 2h, orange 2–4h, red > 4h"),
+                    dcc.Graph(figure=fig_speed_gauge, config={"displayModeBar": False}),
+                ]), style={"flex": "1", "minWidth": "220px"}),
+            ], style={"display": "flex", "gap": GAP, "padding": f"0 24px {GAP} 24px", "flexWrap": "wrap"}),
+
+            html.Div(_card([
+                _section_head("Customer Sentiment Rankings", "Top 3 most positive · Bottom 3 most negative · by average sentiment score"),
+                _render_sentiment_table(sent_rows),
+            ]), style={"padding": f"0 24px {GAP} 24px"}),
+
+            html.Div(_card([
+                _section_head("Customer Speed Rankings", "Top 3 fastest · Bottom 3 slowest · by average time-to-close percentile"),
+                _render_speed_table(speed_rows),
+            ]), style={"padding": f"0 24px {GAP} 24px"}),
+
+            html.Div([
+                html.Div(_card([dcc.Graph(figure=fig_pq,  config={"displayModeBar": False})]), style={"flex": "1", "minWidth": "280px"}),
+                html.Div(_card([dcc.Graph(figure=fig_ceq, config={"displayModeBar": False})]), style={"flex": "1", "minWidth": "280px"}),
+            ], style={"display": "flex", "gap": GAP, "padding": f"0 24px {GAP} 24px", "flexWrap": "wrap"}),
+
+            html.Div([
+                html.Div(_card([dcc.Graph(figure=fig_sent, config={"displayModeBar": False})]), style={"flex": "1", "minWidth": "280px"}),
+            ], style={"display": "flex", "gap": GAP, "padding": f"0 24px {GAP} 24px"}),
+
+            html.Div(_card([
+                _section_head("Feature Requests", f"{len(fr_df)} flagged"),
+                dash_table.DataTable(
+                    data=fr_df.to_dict("records"),
+                    columns=[{"name": c, "id": c} for c in fr_df.columns],
+                    page_size=20,
+                    style_table={"overflowX": "auto"},
+                    style_header={
+                        "backgroundColor": "#1a2540",
+                        "color": TXT,
+                        "fontWeight": "600",
+                        "padding": "10px 16px",
+                        "fontFamily": "Inter, sans-serif",
+                        "fontSize": "12px",
+                        "border": "none",
+                    },
+                    style_cell={
+                        "backgroundColor": CARD_BG,
+                        "color": TXT,
+                        "padding": "10px 16px",
+                        "fontFamily": "Inter, sans-serif",
+                        "fontSize": "13px",
+                        "textAlign": "left",
+                        "whiteSpace": "normal",
+                        "height": "auto",
+                        "border": f"1px solid {CARD_BORDER}",
+                    },
+                    style_data_conditional=[{"if": {"row_index": "odd"}, "backgroundColor": "#111625"}],
+                ) if not fr_df.empty else html.P("No feature requests found.", style={"color": MUTED}),
+            ]), style={"padding": f"0 24px 48px 24px"}),
+        ]),
+    )
+
+    # ── Meeting Notes tab ────────────────────────────────────────────────────
+    meetings_tab = dcc.Tab(
+        label="Meeting Notes",
+        style=tab_style,
+        selected_style=tab_selected_style,
+        children=html.Div([
+            html.Div([
+                html.Button("Refresh Call Notes", id="refresh-btn", n_clicks=0, style={
+                    "background": BLUE,
+                    "color": "#fff",
+                    "border": "none",
+                    "borderRadius": "8px",
+                    "padding": "10px 22px",
+                    "fontSize": "13px",
+                    "fontWeight": "600",
+                    "fontFamily": "Inter, sans-serif",
+                    "cursor": "pointer",
+                }),
+                html.Span(id="refresh-status", style={
+                    "color": MUTED, "fontSize": "12px", "marginLeft": "14px",
+                }),
+            ], style={"padding": f"{GAP} 24px", "display": "flex", "alignItems": "center"}),
+            html.Div(
+                _card([
+                    _section_head("Meeting Notes"),
+                    _render_meeting_notes_table(meeting_notes),
+                ]),
+                id="meeting-notes-card",
+                style={"padding": f"0 24px {GAP} 24px"},
+            ),
+        ]),
+    )
+
+    return html.Div([
         # ── Header ──────────────────────────────────────────────────────────────
         html.Div([
             html.Div([
                 html.Span("◈", style={"color": BLUE, "fontSize": "20px", "marginRight": "10px"}),
-                html.Span("Support Analytics", style={
+                html.Span("CS Agent", style={
                     "color": TXT, "fontWeight": "700", "fontSize": "19px",
                 }),
             ], style={"display": "flex", "alignItems": "center"}),
             html.P(
-                f"{total} tickets · {ANALYSIS_CSV}",
+                f"{total} tickets · {len(meeting_notes)} meetings",
                 style={"color": MUTED, "fontSize": "11px", "margin": "3px 0 0 30px"},
             ),
-        ], style={"padding": "24px 24px 18px 24px"}),
+        ], style={"padding": "24px 24px 0 24px"}),
 
-        # ── Metric cards ─────────────────────────────────────────────────────────
-        html.Div([
-            html.Div(_metric_card("Product Quality Issues", low_pq,  RED,   f"{low_pq} low-scored tickets",  spark_pq,    RED),   style={"flex": "1", "minWidth": "180px"}),
-            html.Div(_metric_card("Client Exp. Issues",    low_ceq, RED,   f"{low_ceq} low-scored tickets", spark_ceq,   RED),   style={"flex": "1", "minWidth": "180px"}),
-            html.Div(_metric_card("Feature Requests",      fr_count, BLUE,  f"{fr_count} flagged",           spark_fr,    BLUE),  style={"flex": "1", "minWidth": "180px"}),
-            html.Div(_metric_card("Total Tickets",         total,   TXT,   "all time",                      spark_total, BLUE),  style={"flex": "1", "minWidth": "180px"}),
-        ], style={"display": "flex", "gap": GAP, "padding": f"0 24px {GAP} 24px", "flexWrap": "wrap"}),
-
-        # ── Gauges ───────────────────────────────────────────────────────────────
-        html.Div([
-            html.Div(_card([
-                _section_head("Sentiment Score", "Average across all tickets — 0 = all negative, 100 = all positive"),
-                dcc.Graph(figure=fig_sent_gauge, config={"displayModeBar": False}),
-            ]), style={"flex": "1", "minWidth": "220px"}),
-            html.Div(_card([
-                _section_head("Speed Score", "Average time to close across all tickets — green < 2h, orange 2–4h, red > 4h"),
-                dcc.Graph(figure=fig_speed_gauge, config={"displayModeBar": False}),
-            ]), style={"flex": "1", "minWidth": "220px"}),
-        ], style={"display": "flex", "gap": GAP, "padding": f"0 24px {GAP} 24px", "flexWrap": "wrap"}),
-
-        # ── Customer Sentiment Rankings ──────────────────────────────────────────
-        html.Div(_card([
-            _section_head("Customer Sentiment Rankings", "Top 3 most positive · Bottom 3 most negative · by average sentiment score"),
-            _render_sentiment_table(sent_rows),
-        ]), style={"padding": f"0 24px {GAP} 24px"}),
-
-        # ── Customer Speed Rankings ──────────────────────────────────────────────
-        html.Div(_card([
-            _section_head("Customer Speed Rankings", "Top 3 fastest · Bottom 3 slowest · by average time-to-close percentile"),
-            _render_speed_table(speed_rows),
-        ]), style={"padding": f"0 24px {GAP} 24px"}),
-
-        # ── Weekly charts ────────────────────────────────────────────────────────
-        html.Div([
-            html.Div(_card([dcc.Graph(figure=fig_pq,  config={"displayModeBar": False})]), style={"flex": "1", "minWidth": "280px"}),
-            html.Div(_card([dcc.Graph(figure=fig_ceq, config={"displayModeBar": False})]), style={"flex": "1", "minWidth": "280px"}),
-        ], style={"display": "flex", "gap": GAP, "padding": f"0 24px {GAP} 24px", "flexWrap": "wrap"}),
-
-        html.Div([
-            html.Div(_card([dcc.Graph(figure=fig_sent, config={"displayModeBar": False})]), style={"flex": "1", "minWidth": "280px"}),
-        ], style={"display": "flex", "gap": GAP, "padding": f"0 24px {GAP} 24px"}),
-
-        # ── Feature Requests ─────────────────────────────────────────────────────
-        html.Div(_card([
-            _section_head("Feature Requests", f"{len(fr_df)} flagged"),
-            dash_table.DataTable(
-                data=fr_df.to_dict("records"),
-                columns=[{"name": c, "id": c} for c in fr_df.columns],
-                page_size=20,
-                style_table={"overflowX": "auto"},
-                style_header={
-                    "backgroundColor": "#1a2540",
-                    "color": TXT,
-                    "fontWeight": "600",
-                    "padding": "10px 16px",
-                    "fontFamily": "Inter, sans-serif",
-                    "fontSize": "12px",
-                    "border": "none",
-                },
-                style_cell={
-                    "backgroundColor": CARD_BG,
-                    "color": TXT,
-                    "padding": "10px 16px",
-                    "fontFamily": "Inter, sans-serif",
-                    "fontSize": "13px",
-                    "textAlign": "left",
-                    "whiteSpace": "normal",
-                    "height": "auto",
-                    "border": f"1px solid {CARD_BORDER}",
-                },
-                style_data_conditional=[{"if": {"row_index": "odd"}, "backgroundColor": "#111625"}],
-            ) if not fr_df.empty else html.P("No feature requests found.", style={"color": MUTED}),
-        ]), style={"padding": f"0 24px 48px 24px"}),
+        # ── Tabs ────────────────────────────────────────────────────────────────
+        dcc.Tabs(
+            [tickets_tab, meetings_tab],
+            style={"padding": "0 24px", "borderBottom": "none"},
+            colors={"border": CARD_BORDER, "primary": BLUE, "background": DARK_BG},
+        ),
 
     ], style={
         "backgroundColor": DARK_BG,
@@ -564,6 +689,60 @@ app = Dash(
 
 df = load_data()
 app.layout = build_layout(df)
+
+
+# ── Callbacks ─────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("meeting-notes-card", "children"),
+    Output("refresh-status", "children"),
+    Input("refresh-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def refresh_meeting_notes(n_clicks):
+    import os
+    import anthropic as _anthropic
+    from meeting_notes import (
+        list_recent_docs,
+        process_doc,
+        get_already_processed,
+        load_existing_notes,
+        save_notes,
+    )
+    from google_auth import get_drive_service, get_calendar_service, get_gmail_service
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    hs_token = os.getenv("HUBSPOT_ACCESS_TOKEN", "").strip()
+    if not api_key or not hs_token:
+        notes = _load_meeting_notes()
+        return [_section_head("Meeting Notes"), _render_meeting_notes_table(notes)], "Missing API keys in .env"
+
+    drive = get_drive_service()
+    calendar = get_calendar_service()
+    gmail = get_gmail_service()
+    claude = _anthropic.Anthropic(api_key=api_key)
+
+    already_done = get_already_processed()
+    docs = list_recent_docs(drive, max_results=20)
+    new_docs = [d for d in docs if d["name"] not in already_done]
+
+    if not new_docs:
+        notes = _load_meeting_notes()
+        return [_section_head("Meeting Notes"), _render_meeting_notes_table(notes)], "No new meetings found."
+
+    processed_count = 0
+    existing = load_existing_notes()
+    for doc in new_docs:
+        result = process_doc(doc, drive, calendar, gmail, claude, hs_token)
+        if result:
+            existing.append(result)
+            processed_count += 1
+    save_notes(existing)
+
+    notes = _load_meeting_notes()
+    status = f"Processed {processed_count} new meeting(s)." if processed_count else "No new meetings could be processed."
+    return [_section_head("Meeting Notes"), _render_meeting_notes_table(notes)], status
+
 
 if __name__ == "__main__":
     print(f"\nLoaded {len(df)} tickets.")
